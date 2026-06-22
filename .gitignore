@@ -1,0 +1,6 @@
+context.md
+build.md
+.env
+.venv/
+runs/
+__pycache__/
