@@ -1,5 +1,6 @@
 context.md
 build.md
+.DS_Store
 .env
 .venv/
 runs/
