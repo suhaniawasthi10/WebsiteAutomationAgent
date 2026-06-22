@@ -17,23 +17,27 @@ from .tools import build_dispatch
 SYSTEM_INSTRUCTION = (
     "You are a web automation agent controlling a real browser, one tool call "
     "per turn. Your goal: fill the form's text fields with short sample values, "
-    "then finish.\n"
+    "then finish. You do NOT need to submit the form.\n"
     "Each turn you receive a screenshot with numbered red boxes over the "
     "interactive elements, plus a list giving each element's id, tag, label, and "
     "the EXACT coordinates to click.\n"
-    "Rules:\n"
-    "- To act on an element, call click_on_screen with the exact coordinates "
-    "given for it in the list. Do NOT guess or invent coordinates.\n"
-    "- To fill a field: click it (its given coordinates), then on the next turn "
-    "call send_keys to type a short sample value into it.\n"
-    "- The form has a text input and a textarea (a description). Fill ONLY the "
-    "fields that actually appear in the element list. Do not invent fields such "
-    "as username or email that are not present.\n"
-    "- Scroll only when the form fields are not in the current element list.\n"
+    "How to fill ONE field (repeat for each field):\n"
+    "1. Make sure the field is in the element list. The description textarea is "
+    "usually below the visible area, so if it is not listed, scroll down to "
+    "reveal it first.\n"
+    "2. Click the field using the exact coordinates given for it in the list.\n"
+    "3. On the NEXT turn, call send_keys to type a short sample value.\n"
+    "Critical rules:\n"
+    "- NEVER call send_keys twice in a row. send_keys types into the field you "
+    "most recently clicked, so to fill a second field you MUST click that field "
+    "first. Typing without clicking the new field just appends to the old one.\n"
+    "- Use the exact coordinates from the list; do not guess or invent any.\n"
+    "- Fill ONLY fields that appear in the list (a text input and a textarea). "
+    "Do not invent fields such as username or email that are not present.\n"
     "- Do exactly one action per turn, then wait for the next screenshot.\n"
-    "- As soon as you have typed a value into each visible form field (the input "
-    "and the textarea), call task_complete with a one-line summary. Do not keep "
-    "scrolling or clicking once the fields are filled."
+    "- Once BOTH the text input and the textarea contain a value, call "
+    "task_complete with a one-line summary. Do not submit and do not keep "
+    "clicking once both fields are filled."
 )
 
 NO_PROGRESS_LIMIT = 3  # consecutive unchanged screenshots before we give up
@@ -55,6 +59,7 @@ def run(task, browser, brain, cfg, log):
     last_raw = None
     no_progress = 0
     completed = False
+    field_focused = False  # True once a click has focused a field, until we type
 
     try:
         for step in range(cfg.max_steps):
@@ -110,14 +115,27 @@ def run(task, browser, brain, cfg, log):
                 time.sleep(cfg.step_delay)
                 continue
 
-            try:
-                result = dispatch[tool](**decision["args"])
-                if isinstance(result, (bytes, bytearray)):
-                    result = "screenshot captured"
-            except KeyError:
-                result = f"ERROR: unknown tool {tool}"
-            except Exception as err:  # noqa: BLE001 - feed it back, don't crash
-                result = f"ERROR: {err}"
+            # guard the click-then-type flow: typing requires a freshly clicked
+            # field, otherwise send_keys would append to the previous one
+            if tool == "send_keys" and not field_focused:
+                result = (
+                    "ERROR: no field is focused. Click the target field first "
+                    "(click_on_screen at its listed coordinates), then send_keys."
+                )
+            else:
+                try:
+                    result = dispatch[tool](**decision["args"])
+                    if isinstance(result, (bytes, bytearray)):
+                        result = "screenshot captured"
+                except KeyError:
+                    result = f"ERROR: unknown tool {tool}"
+                except Exception as err:  # noqa: BLE001 - feed it back, don't crash
+                    result = f"ERROR: {err}"
+                if not str(result).startswith("ERROR"):
+                    if tool in ("click_on_screen", "double_click"):
+                        field_focused = True
+                    elif tool == "send_keys":
+                        field_focused = False  # consumed; must click again to type
             log.result(step, result)
 
             pending_response = types.Part.from_function_response(
