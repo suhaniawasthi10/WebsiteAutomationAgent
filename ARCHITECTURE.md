@@ -119,6 +119,16 @@ ones. A small `STEP_DELAY` between steps also helps stay under the rate limit.
 - **Clicks that land on nothing:** the next screenshot simply shows no change; the loop
   lets the model see that and retry. A no-progress counter stops the run after several
   consecutive unchanged screens.
+- **Failed element interaction (typed text doesn't land):** a pure vision agent can
+  misclick, leaving no field focused — so `send_keys` keystrokes go nowhere and the field
+  stays empty even though the model "typed". To handle this interaction failure, after every
+  `send_keys` the agent reads the focused field's value back and confirms the text actually
+  landed. If it didn't, the click missed: the agent re-clicks the last click target and
+  retries, bounded by `MAX_RECLICK_RETRIES`. If it still fails, it returns an error for the
+  model to recover from on its next turn. The retry is capped so it can never loop, and the
+  overall run stays governed by `MAX_STEPS`. This is what makes a field (e.g. the title)
+  fill reliably instead of silently typing into empty space — directly serving the
+  assignment's error-handling criterion for failed/uncertain element interaction.
 - Every step is wrapped in try/except so one bad step never kills the run, and the browser
   is always closed via a `finally`.
 

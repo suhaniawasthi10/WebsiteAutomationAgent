@@ -61,9 +61,11 @@ class Brain:
                 }
             if getattr(part, "text", None):
                 text_bits.append(part.text)
-        # no function call -> model just talked; treat its text as reasoning
+        # no function call -> model just talked; treat its text as reasoning.
+        # Only reuse the real content if it actually has parts; an empty/parts-
+        # less candidate would otherwise break history trimming downstream.
         decision = self._text_decision(" ".join(text_bits).strip())
-        if content is not None:
+        if content is not None and content.parts:
             decision["content"] = content
         return decision
 

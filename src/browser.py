@@ -93,6 +93,22 @@ class Browser:
         self.page.mouse.wheel(0, dy)
         return f"scrolled {direction} by {amount}"
 
+    def focused_value(self):
+        """Return the focused field's current text, or None if nothing typable
+        is focused. Used to verify that send_keys actually landed: a misclick
+        leaves nothing focused, so the keystrokes go nowhere.
+        """
+        return self.page.evaluate(
+            """() => {
+                const el = document.activeElement;
+                if (!el) return null;
+                const tag = (el.tagName || '').toLowerCase();
+                if (tag === 'input' || tag === 'textarea') return el.value;
+                if (el.isContentEditable) return el.innerText;
+                return null;
+            }"""
+        )
+
     # --- helpers -----------------------------------------------------------
     def _validate_coords(self, x, y):
         w = self.cfg.viewport_width

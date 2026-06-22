@@ -17,30 +17,27 @@ from .tools import build_dispatch
 SYSTEM_INSTRUCTION = (
     "You are a web automation agent controlling a real browser, one tool call "
     "per turn. Your goal: fill the form's text fields with short sample values, "
-    "then finish. You do NOT need to submit the form.\n"
+    "then finish.\n"
     "Each turn you receive a screenshot with numbered red boxes over the "
     "interactive elements, plus a list giving each element's id, tag, label, and "
     "the EXACT coordinates to click.\n"
-    "How to fill ONE field (repeat for each field):\n"
-    "1. Make sure the field is in the element list. The description textarea is "
-    "usually below the visible area, so if it is not listed, scroll down to "
-    "reveal it first.\n"
-    "2. Click the field using the exact coordinates given for it in the list.\n"
-    "3. On the NEXT turn, call send_keys to type a short sample value.\n"
-    "Critical rules:\n"
-    "- NEVER call send_keys twice in a row. send_keys types into the field you "
-    "most recently clicked, so to fill a second field you MUST click that field "
-    "first. Typing without clicking the new field just appends to the old one.\n"
-    "- Use the exact coordinates from the list; do not guess or invent any.\n"
-    "- Fill ONLY fields that appear in the list (a text input and a textarea). "
-    "Do not invent fields such as username or email that are not present.\n"
+    "Rules:\n"
+    "- To act on an element, call click_on_screen with the exact coordinates "
+    "given for it in the list. Do NOT guess or invent coordinates.\n"
+    "- To fill a field: click it (its given coordinates), then on the next turn "
+    "call send_keys to type a short sample value into it.\n"
+    "- The form has a text input and a textarea (a description). Fill ONLY the "
+    "fields that actually appear in the element list. Do not invent fields such "
+    "as username or email that are not present.\n"
+    "- Scroll only when the form fields are not in the current element list.\n"
     "- Do exactly one action per turn, then wait for the next screenshot.\n"
-    "- Once BOTH the text input and the textarea contain a value, call "
-    "task_complete with a one-line summary. Do not submit and do not keep "
-    "clicking once both fields are filled."
+    "- As soon as you have typed a value into each visible form field (the input "
+    "and the textarea), call task_complete with a one-line summary. Do not keep "
+    "scrolling or clicking once the fields are filled."
 )
 
 NO_PROGRESS_LIMIT = 3  # consecutive unchanged screenshots before we give up
+MAX_RECLICK_RETRIES = 2  # bounded re-clicks when typed text fails to land
 
 
 def run(task, browser, brain, cfg, log):
@@ -59,7 +56,7 @@ def run(task, browser, brain, cfg, log):
     last_raw = None
     no_progress = 0
     completed = False
-    field_focused = False  # True once a click has focused a field, until we type
+    last_click = None  # coords of the most recent click, to re-click a missed field
 
     try:
         for step in range(cfg.max_steps):
@@ -115,27 +112,30 @@ def run(task, browser, brain, cfg, log):
                 time.sleep(cfg.step_delay)
                 continue
 
-            # guard the click-then-type flow: typing requires a freshly clicked
-            # field, otherwise send_keys would append to the previous one
-            if tool == "send_keys" and not field_focused:
-                result = (
-                    "ERROR: no field is focused. Click the target field first "
-                    "(click_on_screen at its listed coordinates), then send_keys."
-                )
-            else:
-                try:
-                    result = dispatch[tool](**decision["args"])
+            args = decision["args"]
+            try:
+                if tool == "send_keys":
+                    # verify the text actually landed; re-click + retry on a miss
+                    result = _verified_send_keys(
+                        browser, args.get("text", ""), last_click, log
+                    )
+                else:
+                    result = dispatch[tool](**args)
                     if isinstance(result, (bytes, bytearray)):
                         result = "screenshot captured"
-                except KeyError:
-                    result = f"ERROR: unknown tool {tool}"
-                except Exception as err:  # noqa: BLE001 - feed it back, don't crash
-                    result = f"ERROR: {err}"
-                if not str(result).startswith("ERROR"):
-                    if tool in ("click_on_screen", "double_click"):
-                        field_focused = True
-                    elif tool == "send_keys":
-                        field_focused = False  # consumed; must click again to type
+            except KeyError:
+                result = f"ERROR: unknown tool {tool}"
+            except Exception as err:  # noqa: BLE001 - feed it back, don't crash
+                result = f"ERROR: {err}"
+
+            # remember the latest click so a failed type can re-click that field;
+            # scrolling/navigating moves the page, so it invalidates the target
+            if not str(result).startswith("ERROR"):
+                if tool in ("click_on_screen", "double_click"):
+                    last_click = (args.get("x"), args.get("y"))
+                elif tool in ("scroll", "navigate_to_url"):
+                    last_click = None
+
             log.result(step, result)
 
             pending_response = types.Part.from_function_response(
@@ -149,6 +149,50 @@ def run(task, browser, brain, cfg, log):
         log.info("closed browser")
 
     return completed
+
+
+def _verified_send_keys(browser, text, last_click, log):
+    """Type text, then confirm it landed in the field; re-click + retry on a miss.
+
+    A pure vision agent can misclick, leaving no field focused so the keystrokes
+    go nowhere. After typing we read the focused field back; if the text is not
+    there, the click missed, so we re-click the last click target and retry.
+    Retries are bounded by MAX_RECLICK_RETRIES, so this can never loop — once it
+    gives up it returns an error for the model to handle on its next turn, still
+    governed by MAX_STEPS.
+    """
+    result = browser.send_keys(text)
+    if _text_landed(browser, text):
+        return result
+
+    for attempt in range(MAX_RECLICK_RETRIES):
+        if last_click is None or last_click[0] is None:
+            break  # no known field to re-click; let the model self-correct
+        x, y = last_click
+        log.warn(
+            f"typed text did not land; re-clicking ({x}, {y}) and retrying "
+            f"({attempt + 1}/{MAX_RECLICK_RETRIES})"
+        )
+        browser.click_on_screen(x, y)
+        result = browser.send_keys(text)
+        if _text_landed(browser, text):
+            return result
+
+    return (
+        "ERROR: the typed text did not land in any field — the click likely "
+        "missed it. Click the field again at its listed coordinates, then type."
+    )
+
+
+def _text_landed(browser, text):
+    """True if the focused field now contains the text we typed."""
+    text = (text or "").strip()
+    if text == "":
+        return True
+    value = browser.focused_value()
+    if not value:
+        return False
+    return text in value or value in text
 
 
 def _observation_text(elements):
@@ -165,7 +209,9 @@ def _trim_images(contents):
     trimmed = []
     for content in contents:
         kept = [
-            p for p in content.parts if getattr(p, "inline_data", None) is None
+            p
+            for p in (content.parts or [])
+            if getattr(p, "inline_data", None) is None
         ]
         if kept:
             trimmed.append(types.Content(role=content.role, parts=kept))
