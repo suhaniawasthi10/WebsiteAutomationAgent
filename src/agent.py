@@ -15,19 +15,25 @@ from .annotate import get_interactive_elements, draw_marks, format_elements
 from .tools import build_dispatch
 
 SYSTEM_INSTRUCTION = (
-    "You are a web automation agent that controls a real browser by issuing one "
-    "tool call at a time. Each turn you receive a screenshot of the current "
-    "viewport with numbered red boxes marking interactive elements, plus a list "
-    "of those elements. Decide the single best next action and call exactly one "
-    "tool.\n"
-    "- To act on a numbered element, click the CENTER of its box.\n"
-    "- To fill a form field: first click the field to focus it, then call "
-    "send_keys to type into it.\n"
+    "You are a web automation agent controlling a real browser, one tool call "
+    "per turn. Your goal: fill the form's text fields with short sample values, "
+    "then finish.\n"
+    "Each turn you receive a screenshot with numbered red boxes over the "
+    "interactive elements, plus a list giving each element's id, tag, label, and "
+    "the EXACT coordinates to click.\n"
+    "Rules:\n"
+    "- To act on an element, call click_on_screen with the exact coordinates "
+    "given for it in the list. Do NOT guess or invent coordinates.\n"
+    "- To fill a field: click it (its given coordinates), then on the next turn "
+    "call send_keys to type a short sample value into it.\n"
+    "- The form has a text input and a textarea (a description). Fill ONLY the "
+    "fields that actually appear in the element list. Do not invent fields such "
+    "as username or email that are not present.\n"
+    "- Scroll only when the form fields are not in the current element list.\n"
     "- Do exactly one action per turn, then wait for the next screenshot.\n"
-    "- If a click misses or nothing changes, look again and adjust.\n"
-    "- If the target elements are not visible, scroll to reveal them.\n"
-    "When the requested fields are filled, call task_complete with a short "
-    "summary. Do not call task_complete until the task is actually done."
+    "- As soon as you have typed a value into each visible form field (the input "
+    "and the textarea), call task_complete with a one-line summary. Do not keep "
+    "scrolling or clicking once the fields are filled."
 )
 
 NO_PROGRESS_LIMIT = 3  # consecutive unchanged screenshots before we give up
@@ -130,7 +136,8 @@ def run(task, browser, brain, cfg, log):
 def _observation_text(elements):
     return (
         "Here is the current screen. Numbered red boxes mark interactive "
-        "elements; to act on one, click the CENTER of its box.\n"
+        "elements. Each line below gives the exact coordinates to click for that "
+        "element — use them directly, do not guess.\n"
         "Elements:\n" + format_elements(elements)
     )
 

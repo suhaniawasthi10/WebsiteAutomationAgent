@@ -102,12 +102,20 @@ def element_center(el):
 
 
 def format_elements(elements):
-    """One line per element for the text the model sees alongside the image."""
+    """One line per element for the text the model sees alongside the image.
+
+    Each line carries the exact center coordinates so the model can click the
+    box center directly instead of guessing pixels off the image.
+    """
     if not elements:
         return "(no interactive elements detected)"
-    return "\n".join(
-        f'[{el["id"]}] {el["tag"]} "{el["label"]}"' for el in elements
-    )
+    lines = []
+    for el in elements:
+        cx, cy = element_center(el)
+        lines.append(
+            f'[{el["id"]}] {el["tag"]} "{el["label"]}" -> click ({cx}, {cy})'
+        )
+    return "\n".join(lines)
 
 
 def _load_font(size):
